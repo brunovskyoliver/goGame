@@ -268,8 +268,8 @@ func layout(st *ClientState) func(*gocui.Gui) error {
 		sz := int(board.SIZE)
 		cellW := 2
 		boardW := sz * cellW
-		left  := maxX/2 - boardW/2
-		right := left + boardW + 1
+		left  := maxX/2 - boardW/2 - cellW
+		right := left + boardW + 2
 		top := maxY/2 - sz/2
 		bottom := top + sz + 1
 		headerTop := top - 2
@@ -298,6 +298,7 @@ func layout(st *ClientState) func(*gocui.Gui) error {
 		v.Clear()
 
 		for y := 0; y < sz; y++ {
+			fmt.Fprint(v," ")
 			for x := 0; x < sz; x++ {
 				val, _ := st.b.At(uint8(x), uint8(y))
 
