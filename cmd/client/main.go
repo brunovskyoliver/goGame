@@ -222,6 +222,7 @@ func applySnapshot(b *board.Board, w, h uint8, cells []byte){
 func main() {
 	var ip string
 	flag.StringVar(&ip, "ip", "127.0.0.1", "ip address of the server")
+	flag.Parse()
 	ip = net.JoinHostPort(ip, "8088")
 	b := board.New(board.SIZE, board.SIZE)
 	ticker := time.NewTicker(1000 * time.Millisecond)

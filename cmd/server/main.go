@@ -72,7 +72,7 @@ func (g *GameState) SpawnPlayer(id uint8) (x, y uint8, err error) {
 
 func main(){
 	g := &GameState{board: board.New(board.SIZE, board.SIZE)}
-	server, err := network.NewTCPServer(":8088", g)
+	server, err := network.NewTCPServer("0.0.0.0:8088", g)
 	if err != nil {
 		log.Fatalf("error: %s\n", err.Error())
 	}
