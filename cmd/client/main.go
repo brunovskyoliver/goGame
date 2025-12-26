@@ -4,6 +4,7 @@ import (
 	"brunovskyoliver/game/pkg/board"
 	"brunovskyoliver/game/pkg/network"
 	"brunovskyoliver/game/pkg/player"
+	"flag"
 	"fmt"
 	"io"
 	"log"
@@ -219,11 +220,14 @@ func applySnapshot(b *board.Board, w, h uint8, cells []byte){
 }
 
 func main() {
+	var ip string
+	flag.StringVar(&ip, "ip", "127.0.0.1", "ip address of the server")
+	ip = net.JoinHostPort(ip, "8088")
 	b := board.New(board.SIZE, board.SIZE)
 	ticker := time.NewTicker(1000 * time.Millisecond)
 	var conn net.Conn
 	for range ticker.C {
-		c, err := net.Dial("tcp4", "127.0.0.1:8088")
+		c, err := net.Dial("tcp4", ip)
 		if err != nil {
 			log.Println("couldnt connect", err)
 			continue
