@@ -216,8 +216,10 @@ func applySnapshot(b *board.Board, w, h uint8, cells []byte){
 
 func main() {
 	var ip, mode string
+	var matchID int
 	flag.StringVar(&ip, "ip", "127.0.0.1", "ip address of the server")
 	flag.StringVar(&mode, "mode", "p", "mode of the game")
+	flag.IntVar(&matchID, "match", 1, "match id to spectate (viewer only)")
 	flag.Parse()
 	ip = net.JoinHostPort(ip, "8088")
 	b := board.New(board.SIZE, board.SIZE)
@@ -237,12 +239,18 @@ func main() {
 	if mode == "v" {
 		modeInt = network.ModeViewer
 	}
-	p := network.Packet{Opcode: network.OpMode, Mode: modeInt}
-	data := []byte{p.Opcode, p.Mode}
-	_, err := conn.Write(data)
-	if err != nil {
-		log.Printf("error: %s\n", err.Error())
-		return
+	if modeInt == network.ModeViewer {
+		_, err := conn.Write([]byte{network.OpMode, network.ModeViewer, uint8(matchID)})
+		if err != nil {
+			log.Printf("error: %s\n", err.Error())
+			return
+		}
+	} else {
+		_, err := conn.Write([]byte{network.OpMode, network.ModePlayer})
+		if err != nil {
+			log.Printf("error: %s\n", err.Error())
+			return
+		}
 	}
 	st := &ClientState{
 		b: b,
