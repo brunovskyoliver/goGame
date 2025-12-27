@@ -11,18 +11,24 @@ import (
 )
 
 const (
-	OpPlace uint8 = 1
+	ModePlayer uint8 = 1
+	ModeViewer uint8 = 2
+)
+const (
+	OpMode uint8 = 1
 	OpRegister uint8 = 2
-	OpSnapshot uint8 = 3
-	OpMove uint8 = 4
-	OpAck uint8 = 5
-	OpEcho uint8 = 6
+	OpPlace uint8 = 3
+	OpSnapshot uint8 = 4
+	OpMove uint8 = 5
+	OpAck uint8 = 6
+	OpEcho uint8 = 7
 	OpEnd uint8 = 255
 )
 type PlayerState struct {
 	conn net.Conn
 	Player *player.Player
 	last_echo uint64
+	Mode uint8
 }
 type TCPClient struct {
 	conn net.Conn
@@ -43,6 +49,7 @@ type Packet struct {
 	W,H	   uint8
 	Cells  []byte
 	ID	   uint8
+	Mode   uint8
 }
 
 type Handler interface {
@@ -96,12 +103,39 @@ func (s *TCPServer) Start() error {
 		if err != nil {
 			return err
 		}
-		err = s.register(conn)
+		op := make([]byte, 1)
+		_, err = io.ReadFull(conn, op[:])
+		if err != nil {
+			log.Printf("error: %s\n", err.Error())
+		}
+		if op[0] != OpMode {
+			log.Printf("not a mode packet")
+			conn.Close()
+			continue
+		}
+		mode := make([]byte, 1)
+		_, err = io.ReadFull(conn, mode[:])
 		if err != nil {
 			log.Printf("error: %s\n", err.Error())
 			continue
 		}
-		go s.readLoop(conn, incoming)
+		log.Printf("got mode: %v from: %v", mode[0], conn.RemoteAddr().String())
+		switch mode[0]{
+		case ModePlayer:
+			err = s.register(conn, mode[0])
+			if err != nil {
+				log.Printf("error: %s\n", err.Error())
+				continue
+			}
+			go s.readLoop(conn, incoming)
+		case ModeViewer:
+			err = s.register(conn, mode[0])
+			if err != nil {
+				log.Printf("error: %s\n", err.Error())
+				continue
+			}
+			go s.readLoop(conn, incoming)
+		}
 	}
 }
 
@@ -109,42 +143,59 @@ func (s *TCPServer) playerByID(id uint8) *PlayerState{
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, ps := range s.clients{
-		if ps.Player.ID == id {
-			return ps
+		if ps.Mode == ModePlayer{
+			if ps.Player.ID == id {
+				return ps
+			}
 		}
 
 	}
 	return nil
 }
 
-func (s *TCPServer) register(conn net.Conn) error{
+func (s *TCPServer) register(conn net.Conn, mode uint8) error{
 	s.mu.Lock()
-	s.nextPlayerID++
-	id := s.nextPlayerID
-	startBroadcast := !s.broadcastStarted
-	if startBroadcast {
-		s.broadcastStarted = true
-	}
+		startBroadcast := !s.broadcastStarted
+		if startBroadcast {
+			s.broadcastStarted = true
+		}
 	s.mu.Unlock()
-	x, y, err := s.handler.SpawnPlayer(id)
-	if err != nil {
-		log.Printf("error could not spawn: %s\n", err.Error())
-		_ = conn.Close()
-		return err
+	if mode == ModePlayer {
+		s.mu.Lock()
+		s.nextPlayerID++
+		id := s.nextPlayerID
+		s.mu.Unlock()
+		x, y, err := s.handler.SpawnPlayer(id)
+		if err != nil {
+			log.Printf("error could not spawn: %s\n", err.Error())
+			_ = conn.Close()
+			return err
+		}
+		reg := []byte{OpRegister, id, x, y}
+		if _, err := conn.Write(reg); err != nil {
+			log.Println("could not send register:", err)
+			s.remove(conn)
+			return err
+		}
+		s.mu.Lock()
+		s.clients[conn] = &PlayerState{
+			conn: conn,
+			Player: &player.Player{ID: id, X: x, Y: y},
+			last_echo: 0,
+			Mode: ModePlayer,
+
+		}
+		s.mu.Unlock()
+	} else {
+		s.mu.Lock()
+		s.clients[conn] = &PlayerState{
+			conn: conn,
+			last_echo: 0,
+			Mode: ModeViewer,
+
+		}
+		s.mu.Unlock()
 	}
-	reg := []byte{OpRegister, id, x, y}
-	if _, err := conn.Write(reg); err != nil {
-		log.Println("could not send register:", err)
-		s.remove(conn)
-		return err
-	}
-	s.mu.Lock()
-	s.clients[conn] = &PlayerState{
-		conn: conn,
-		Player: &player.Player{ID: id, X: x, Y: y},
-		last_echo: 0,
-	}
-	s.mu.Unlock()
 	if startBroadcast {
 		go s.broadcastLoop()
 	}
@@ -169,11 +220,13 @@ func (s *TCPServer) echo() {
 		}
 		conns := make([]net.Conn, 0, len(s.clients))
 		for c, ps := range s.clients{
-			if ps.last_echo > uint64(10){
-				conns = append(conns, c)
-				log.Printf("echo not recieved from %v in last 10s", ps.Player.ID)
-			} else {
-				ps.last_echo++
+			if ps.Mode == ModePlayer {
+				if ps.last_echo > uint64(10){
+					conns = append(conns, c)
+					log.Printf("echo not recieved from %v in last 10s", c.RemoteAddr().String())
+				} else {
+					ps.last_echo++
+				}
 			}
 		}
 		s.mu.Unlock()
@@ -195,7 +248,7 @@ func (s *TCPServer) handlePacket(p *Packet){
 	case OpEcho:
 		id := p.ID
 		if st := s.playerByID(id); st == nil {
-			log.Printf("could not find playerState for the id: %v\n", id)
+			return
 		} else {
 			s.mu.Lock()
 			st.last_echo = 0
@@ -218,7 +271,7 @@ func (s *TCPServer) remove(conn net.Conn) {
 		s.broadcastStarted = false
 	}
 	s.mu.Unlock()
-	if ok && st != nil && st.Player != nil{
+	if ok && st != nil && st.Player != nil && st.Mode == ModePlayer {
 		_ = s.handler.PlaceAt(st.Player.X, st.Player.Y, 0)
 		s.broadcastSnapshot(nil)
 	}
@@ -238,8 +291,8 @@ func (s *TCPServer) broadcastLoop() {
 		}
 
 		conns := make([]net.Conn, 0, len(s.clients))
-		for c := range s.clients {
-			conns = append(conns, c)
+		for c, _:= range s.clients {
+				conns = append(conns, c)
 		}
 		s.mu.Unlock()
 		p := Packet{Opcode:OpEcho}
