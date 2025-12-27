@@ -1,4 +1,5 @@
 package network
+//
 
 import (
 	"brunovskyoliver/game/pkg/player"
