@@ -24,6 +24,7 @@ const (
 	OpEcho uint8 = 7
 	OpEnd uint8 = 255
 )
+
 type PlayerState struct {
 	conn net.Conn
 	Player *player.Player
@@ -98,6 +99,7 @@ func (s *TCPServer) Start() error {
 		}
 	}()
 	go s.echo()
+	m := &Match{}
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
