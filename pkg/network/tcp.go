@@ -1,11 +1,9 @@
 package network
 
 import (
-	"brunovskyoliver/game/pkg/board"
 	"brunovskyoliver/game/pkg/player"
 	"io"
 	"log"
-	"math/rand"
 	"net"
 	"sync"
 	"time"
@@ -17,10 +15,13 @@ const (
 	OpSnapshot uint8 = 3
 	OpMove uint8 = 4
 	OpAck uint8 = 5
+	OpEcho uint8 = 6
+	OpEnd uint8 = 255
 )
 type PlayerState struct {
 	conn net.Conn
 	Player *player.Player
+	last_echo uint64
 }
 type TCPClient struct {
 	conn net.Conn
@@ -82,6 +83,13 @@ func NewTCPServer(address string, h Handler) (*TCPServer, error) {
 }
 
 func (s *TCPServer) Start() error {
+	incoming := make(chan Packet, 32)
+	go func() {
+		for p := range incoming {
+			s.handlePacket(&p)
+		}
+	}()
+	go s.echo()
 	for {
 		conn, err := s.listener.Accept()
 		if err != nil {
@@ -92,10 +100,20 @@ func (s *TCPServer) Start() error {
 			log.Printf("error: %s\n", err.Error())
 			continue
 		}
-		go s.readLoop(conn)
+		go s.readLoop(conn, incoming)
+	}
+}
 
+func (s *TCPServer) playerByID(id uint8) *PlayerState{
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, ps := range s.clients{
+		if ps.Player.ID == id {
+			return ps
+		}
 
 	}
+	return nil
 }
 
 func (s *TCPServer) register(conn net.Conn) error{
@@ -123,10 +141,11 @@ func (s *TCPServer) register(conn net.Conn) error{
 	s.clients[conn] = &PlayerState{
 		conn: conn,
 		Player: &player.Player{ID: id, X: x, Y: y},
+		last_echo: 0,
 	}
 	s.mu.Unlock()
 	if startBroadcast {
-		// go s.broadcastLoop()
+		go s.broadcastLoop()
 	}
 	col, row, cells := s.handler.Snapshot()
 	data := append([]byte{OpSnapshot, col, row}, cells...)
@@ -137,6 +156,53 @@ func (s *TCPServer) register(conn net.Conn) error{
 	}
 	s.broadcastSnapshot(conn)
 	return nil
+}
+func (s *TCPServer) echo() {
+	ticker := time.NewTicker(1000 * time.Millisecond)
+	defer ticker.Stop()
+	for range ticker.C {
+		s.mu.Lock()
+		if len(s.clients) == 0 {
+			s.mu.Unlock()
+			continue
+		}
+		conns := make([]net.Conn, 0, len(s.clients))
+		for c, ps := range s.clients{
+			if ps.last_echo > uint64(10){
+				conns = append(conns, c)
+				log.Printf("echo not recieved from %v in last 10s", ps.Player.ID)
+			} else {
+				ps.last_echo++
+			}
+		}
+		s.mu.Unlock()
+		for _ , c := range conns {
+			p := Packet{Opcode: OpEnd}
+			data := []byte{p.Opcode}
+			_, err := c.Write(data)
+			if err != nil {
+				log.Printf("error: %s\n", err.Error())
+				continue
+			}
+			s.remove(c)
+		}
+	}
+}
+
+func (s *TCPServer) handlePacket(p *Packet){
+	switch p.Opcode{
+	case OpEcho:
+		id := p.ID
+		if st := s.playerByID(id); st == nil {
+			log.Printf("could not find playerState for the id: %v\n", id)
+		} else {
+			s.mu.Lock()
+			st.last_echo = 0
+			s.mu.Unlock()
+		}
+
+	}
+
 }
 
 func (s *TCPServer) remove(conn net.Conn) {
@@ -159,7 +225,7 @@ func (s *TCPServer) remove(conn net.Conn) {
 }
 
 func (s *TCPServer) broadcastLoop() {
-	ticker := time.NewTicker(1000 * time.Millisecond)
+	ticker := time.NewTicker(2000 * time.Millisecond)
 	defer ticker.Stop()
 
 	for range ticker.C {
@@ -175,14 +241,8 @@ func (s *TCPServer) broadcastLoop() {
 			conns = append(conns, c)
 		}
 		s.mu.Unlock()
-
-		x := rand.Intn(int(board.SIZE))
-		y := rand.Intn(int(board.SIZE))
-		p := Packet{Opcode: OpPlace, X: uint8(x), Y: uint8(y)}
-		s.handler.OnPacket(nil, p, 0)
-
-		data := []byte{p.Opcode, p.X, p.Y}
-
+		p := Packet{Opcode:OpEcho}
+		data := []byte{p.Opcode}
 		for _, c := range conns {
 			if _, err := c.Write(data); err != nil {
 				s.remove(c)
@@ -211,23 +271,31 @@ func (s *TCPServer) broadcastSnapshot(except net.Conn) {
 }
 
 
-func (s *TCPServer) readLoop(conn net.Conn){
+func (s *TCPServer) readLoop(conn net.Conn, incoming chan <- Packet) {
 	defer s.remove(conn)
 	for {
-		var op [1]byte
+		op := make([]byte, 1)
 		if _, err := io.ReadFull(conn, op[:]); err != nil {
 			log.Printf("error reading: %s\n", err.Error())
 			return
 		}
 		switch op[0]{
+		case OpEcho:
+			idByte := make([]byte, 1)
+			if _, err := io.ReadFull(conn, idByte[:]); err != nil {
+				log.Printf("error reading: %s\n", err.Error())
+				continue
+			}
+			log.Println("read echo from id:", idByte[0])
+			incoming <- Packet{Opcode: OpEcho, ID: idByte[0]}
 		case OpMove:
-			var idByte [1]byte
+			idByte := make([]byte, 1)
 			if _, err := io.ReadFull(conn, idByte[:]); err != nil {
 				log.Printf("error reading: %s\n", err.Error())
 				continue
 			}
 			id := idByte[0]
-			var xy [2]byte
+			xy := make([]byte, 2)
 			if _, err := io.ReadFull(conn, xy[:]); err != nil {
 				log.Printf("error reading: %s\n", err.Error())
 				continue

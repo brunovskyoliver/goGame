@@ -151,13 +151,15 @@ func moveRight(st *ClientState, g *gocui.Gui, v *gocui.View) error {
 func readLoop(conn net.Conn, incoming chan <- network.Packet){
 	defer close(incoming)
 	for {
-		var op [1]byte
+		op := make([]byte, 1)
 		_, err:= io.ReadFull(conn, op[:])
 		if err != nil {
 			log.Printf("error reading op: %s\n", err.Error())
 			return
 		}
 		switch op[0]{
+		case network.OpEcho:
+			incoming <- network.Packet{Opcode: network.OpEcho}
 		case network.OpRegister:
 			var b [3]byte
 			if _, err := io.ReadFull(conn, b[:]); err != nil {
@@ -248,6 +250,13 @@ func main() {
 
 func handlePacket(st *ClientState, p *network.Packet) {
 	switch p.Opcode{
+	case network.OpEcho:
+		p := network.Packet{Opcode: network.OpEcho, ID: st.me.ID}
+		data := []byte{p.Opcode,p.ID}
+		_, err := st.conn.Write(data)
+		if err != nil {
+			log.Println("error could not send echo back: %s\n", err.Error())
+		}
 	case network.OpPlace:
 		if err := st.b.Set(p.X, p.Y, 255); err != nil {
 			log.Println("Set failed:", err)
